@@ -1,0 +1,6 @@
+bin/
+obj/
+.vs/
+vscode-extension/node_modules/
+vscode-extension/out/
+vscode-extension/dist/

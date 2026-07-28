@@ -1,0 +1,87 @@
+{
+  "name": "mymcp-vscode-extension",
+  "displayName": "MyMCP Connector",
+  "description": "Registers the local MyMCP stdio server in VS Code.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:mymcp.openMcpServers",
+    "onCommand:mymcp.startMcpServer",
+    "onCommand:mymcp.restartMcpServer",
+    "onCommand:mymcp.selectActiveProject",
+    "onCommand:mymcp.bootstrapProjectDocs",
+    "onCommand:mymcp.openMainContext",
+    "onCommand:mymcp.editMainContext",
+    "onCommand:mymcp.openActiveProjectSpecs",
+    "onCommand:mymcp.createFeatureSpec",
+    "onCommand:mymcp.createTaskDoc",
+    "onCommand:mymcp.listSpecArtifacts",
+    "onCommand:mymcp.openSpecsRoot"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "mymcp.openMcpServers",
+        "title": "MyMCP: Open MCP Servers"
+      },
+      {
+        "command": "mymcp.startMcpServer",
+        "title": "MyMCP: Start MCP Server"
+      },
+      {
+        "command": "mymcp.restartMcpServer",
+        "title": "MyMCP: Restart MCP Server"
+      },
+      {
+        "command": "mymcp.selectActiveProject",
+        "title": "MyMCP: Select Active Project"
+      },
+      {
+        "command": "mymcp.bootstrapProjectDocs",
+        "title": "MyMCP: Bootstrap Project Docs"
+      },
+      {
+        "command": "mymcp.openMainContext",
+        "title": "MyMCP: Open Main Context"
+      },
+      {
+        "command": "mymcp.editMainContext",
+        "title": "MyMCP: Edit Main Context"
+      },
+      {
+        "command": "mymcp.openActiveProjectSpecs",
+        "title": "MyMCP: Open Active Project Specs"
+      },
+      {
+        "command": "mymcp.createFeatureSpec",
+        "title": "MyMCP: Create Feature Spec"
+      },
+      {
+        "command": "mymcp.createTaskDoc",
+        "title": "MyMCP: Create Task Doc"
+      },
+      {
+        "command": "mymcp.listSpecArtifacts",
+        "title": "MyMCP: List Spec Artifacts"
+      },
+      {
+        "command": "mymcp.openSpecsRoot",
+        "title": "MyMCP: Open Specs Root"
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "mymcp.provider",
+        "label": "MyMCP Server Provider"
+      }
+    ]
+  }
+}
