@@ -57,6 +57,41 @@ public static class WorkspaceTools
         bool createDirectories = true)
         => workspace.WriteMainContext(content, createDirectories);
 
+    [McpServerTool, Description("Read a markdown document from the docs pack under .mymcp/docs.")]
+    public static string ReadDocsMarkdown(
+        WorkspaceService workspace,
+        [Description("Relative path inside the docs pack, such as README.md or architecture.md.")]
+        string path)
+        => workspace.ReadDocsMarkdown(path);
+
+    [McpServerTool, Description("Write a markdown document under the docs pack at .mymcp/docs.")]
+    public static string WriteDocsMarkdown(
+        WorkspaceService workspace,
+        [Description("Relative path inside the docs pack.")]
+        string path,
+        [Description("Markdown content to write.")]
+        string content,
+        [Description("Create missing parent directories.")]
+        bool createDirectories = true)
+        => workspace.WriteDocsMarkdown(path, content, createDirectories);
+
+    [McpServerTool, Description("Create a documentation pack with README, architecture, runbook and decisions files.")]
+    public static string CreateDocsPack(
+        WorkspaceService workspace,
+        [Description("Slug used for the docs folder name.")]
+        string slug,
+        [Description("Human-readable title for the docs pack.")]
+        string title,
+        [Description("Short summary of the docs pack.")]
+        string summary,
+        [Description("Overwrite existing markdown files if the pack already exists.")]
+        bool overwriteExisting = false)
+        => workspace.CreateDocsPack(new DocsPackRequest(slug, title, summary, overwriteExisting));
+
+    [McpServerTool, Description("List markdown artifacts under the documentation pack.")]
+    public static string ListDocsArtifacts(WorkspaceService workspace)
+        => string.Join(Environment.NewLine, workspace.ListDocsArtifacts());
+
     [McpServerTool, Description("List markdown artifacts under the spec-driven design folder.")]
     public static string ListSpecArtifacts(WorkspaceService workspace)
         => string.Join(Environment.NewLine, workspace.ListSpecArtifacts());

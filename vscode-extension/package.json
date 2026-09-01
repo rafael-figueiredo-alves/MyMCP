@@ -2,7 +2,7 @@
   "name": "mymcp-vscode-extension",
   "displayName": "MyMCP Connector",
   "description": "Registers the local MyMCP stdio server in VS Code.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "local",
   "engines": {
     "vscode": "^1.105.0"
@@ -10,23 +10,52 @@
   "categories": [
     "Other"
   ],
+  "files": [
+    "extension.js",
+    "media/**",
+    "LICENSE",
+    "server/**"
+  ],
   "main": "./extension.js",
   "activationEvents": [
     "onStartupFinished",
+    "onView:mymcp.view",
     "onCommand:mymcp.openMcpServers",
     "onCommand:mymcp.startMcpServer",
     "onCommand:mymcp.restartMcpServer",
+    "onCommand:mymcp.testConnection",
     "onCommand:mymcp.selectActiveProject",
     "onCommand:mymcp.bootstrapProjectDocs",
+    "onCommand:mymcp.bootstrapDocsPack",
+    "onCommand:mymcp.createDocsPack",
     "onCommand:mymcp.openMainContext",
     "onCommand:mymcp.editMainContext",
     "onCommand:mymcp.openActiveProjectSpecs",
+    "onCommand:mymcp.openActiveDocsPack",
     "onCommand:mymcp.createFeatureSpec",
     "onCommand:mymcp.createTaskDoc",
     "onCommand:mymcp.listSpecArtifacts",
-    "onCommand:mymcp.openSpecsRoot"
+    "onCommand:mymcp.openSpecsRoot",
+    "onCommand:mymcp.listDocsArtifacts"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mymcpContainer",
+          "title": "MyMCP",
+          "icon": "media/mymcp.svg"
+        }
+      ]
+    },
+    "views": {
+      "mymcpContainer": [
+        {
+          "id": "mymcp.view",
+          "name": "MyMCP"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "mymcp.openMcpServers",
@@ -41,12 +70,24 @@
         "title": "MyMCP: Restart MCP Server"
       },
       {
+        "command": "mymcp.testConnection",
+        "title": "MyMCP: Test Connection"
+      },
+      {
         "command": "mymcp.selectActiveProject",
         "title": "MyMCP: Select Active Project"
       },
       {
         "command": "mymcp.bootstrapProjectDocs",
         "title": "MyMCP: Bootstrap Project Docs"
+      },
+      {
+        "command": "mymcp.bootstrapDocsPack",
+        "title": "MyMCP: Bootstrap Docs Pack"
+      },
+      {
+        "command": "mymcp.createDocsPack",
+        "title": "MyMCP: Create Docs Pack"
       },
       {
         "command": "mymcp.openMainContext",
@@ -61,6 +102,10 @@
         "title": "MyMCP: Open Active Project Specs"
       },
       {
+        "command": "mymcp.openActiveDocsPack",
+        "title": "MyMCP: Open Active Docs Pack"
+      },
+      {
         "command": "mymcp.createFeatureSpec",
         "title": "MyMCP: Create Feature Spec"
       },
@@ -73,10 +118,38 @@
         "title": "MyMCP: List Spec Artifacts"
       },
       {
+        "command": "mymcp.listDocsArtifacts",
+        "title": "MyMCP: List Docs Artifacts"
+      },
+      {
         "command": "mymcp.openSpecsRoot",
         "title": "MyMCP: Open Specs Root"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "mymcp.testConnection",
+          "when": "view == mymcp.view",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mymcp.startMcpServer",
+          "when": "view == mymcp.view",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mymcp.restartMcpServer",
+          "when": "view == mymcp.view",
+          "group": "navigation@3"
+        },
+        {
+          "command": "mymcp.selectActiveProject",
+          "when": "view == mymcp.view",
+          "group": "navigation@4"
+        }
+      ]
+    },
     "mcpServerDefinitionProviders": [
       {
         "id": "mymcp.provider",

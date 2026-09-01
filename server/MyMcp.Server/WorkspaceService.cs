@@ -6,6 +6,7 @@ public sealed class WorkspaceService
 {
     public const string MainContextRelativePath = ".mymcp/context/main.md";
     public const string SpecsRootRelativePath = ".mymcp/specs";
+    public const string DocsRootRelativePath = ".mymcp/docs";
     public const string FeatureSpecsRootRelativePath = ".mymcp/specs/features";
     public const string TaskDocsRootRelativePath = ".mymcp/specs/tasks";
 
@@ -160,6 +161,47 @@ public sealed class WorkspaceService
     public string WriteMainContext(string content, bool createDirectories)
         => WriteTextFile(MainContextRelativePath, content, createDirectories);
 
+    public string ReadDocsMarkdown(string relativePath)
+        => ReadMarkdownFile(Path.Combine(DocsRootRelativePath, relativePath));
+
+    public string WriteDocsMarkdown(string relativePath, string content, bool createDirectories)
+        => WriteTextFile(Path.Combine(DocsRootRelativePath, relativePath), content, createDirectories);
+
+    public string CreateDocsPack(DocsPackRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var slug = NormalizeSlug(request.Slug);
+        var docsRoot = ResolvePath(Path.Combine(DocsRootRelativePath, slug));
+        Directory.CreateDirectory(docsRoot);
+
+        var readmePath = Path.Combine(docsRoot, "README.md");
+        var architecturePath = Path.Combine(docsRoot, "architecture.md");
+        var runbookPath = Path.Combine(docsRoot, "runbook.md");
+        var decisionsPath = Path.Combine(docsRoot, "decisions.md");
+
+        if (!request.OverwriteExisting &&
+            (File.Exists(readmePath) || File.Exists(architecturePath) || File.Exists(runbookPath) || File.Exists(decisionsPath)))
+        {
+            throw new InvalidOperationException($"Documentation pack already exists: {slug}");
+        }
+
+        File.WriteAllText(readmePath, BuildDocsReadmeTemplate(request), Encoding.UTF8);
+        File.WriteAllText(architecturePath, BuildArchitectureDocTemplate(request), Encoding.UTF8);
+        File.WriteAllText(runbookPath, BuildRunbookDocTemplate(request), Encoding.UTF8);
+        File.WriteAllText(decisionsPath, BuildDecisionsDocTemplate(request), Encoding.UTF8);
+
+        return string.Join(
+            Environment.NewLine,
+            new[]
+            {
+                $"Created docs readme: {GetRelativePath(readmePath)}",
+                $"Created architecture doc: {GetRelativePath(architecturePath)}",
+                $"Created runbook: {GetRelativePath(runbookPath)}",
+                $"Created decisions log: {GetRelativePath(decisionsPath)}"
+            });
+    }
+
     public string CreateFeatureSpec(FeatureSpecRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -219,6 +261,21 @@ public sealed class WorkspaceService
         return EnumerateTextFiles(root)
             .Select(GetRelativePath)
             .Where(path => path.StartsWith($"{SpecsRootRelativePath}/", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    public IReadOnlyList<string> ListDocsArtifacts()
+    {
+        var root = ResolvePath(DocsRootRelativePath);
+        if (!Directory.Exists(root))
+        {
+            return [];
+        }
+
+        return EnumerateTextFiles(root)
+            .Select(GetRelativePath)
+            .Where(path => path.StartsWith($"{DocsRootRelativePath}/", StringComparison.OrdinalIgnoreCase))
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
@@ -565,6 +622,77 @@ public sealed class WorkspaceService
 
         - [ ] Task is validated
         """;
+
+    private static string BuildDocsReadmeTemplate(DocsPackRequest request)
+        => $"""
+        # {request.Title}
+
+        ## Summary
+
+        {request.Summary}
+
+        ## Included Documents
+
+        - architecture.md
+        - runbook.md
+        - decisions.md
+
+        ## Purpose
+
+        Keep durable project documentation close to the code and aligned with the main context.
+        """;
+
+    private static string BuildArchitectureDocTemplate(DocsPackRequest request)
+        => $"""
+        # Architecture - {request.Title}
+
+        ## Overview
+
+        {request.Summary}
+
+        ## Components
+
+        - Application layers
+        - MCP integration
+        - Editor integration
+
+        ## Constraints
+
+        - Keep the design modular.
+        - Avoid coupling business rules to transport concerns.
+        """;
+
+    private static string BuildRunbookDocTemplate(DocsPackRequest request)
+        => $"""
+        # Runbook - {request.Title}
+
+        ## Startup
+
+        - Start the server.
+        - Open the VS Code extension view.
+        - Test the connection.
+
+        ## Common Actions
+
+        - Refresh the server definition.
+        - Bootstrap project docs.
+        - Create feature specs and task docs.
+
+        ## Troubleshooting
+
+        - Ensure the .NET 10 SDK is installed.
+        - Rebuild the server if the executable is missing.
+        - Reinstall the VS Code extension if the view does not appear.
+        """;
+
+    private static string BuildDecisionsDocTemplate(DocsPackRequest request)
+        => $"""
+        # Decisions - {request.Title}
+
+        - Record durable architecture and workflow decisions here.
+        - Prefer short entries that explain why a choice was made.
+        - Capture the date, context, and follow-up if needed.
+        """;
 }
 
 public sealed record SearchHit(string Path, int Line, string Snippet);
@@ -576,6 +704,12 @@ public sealed record FeatureSpecRequest(
     bool OverwriteExisting = false);
 
 public sealed record TaskDocRequest(
+    string Slug,
+    string Title,
+    string Summary,
+    bool OverwriteExisting = false);
+
+public sealed record DocsPackRequest(
     string Slug,
     string Title,
     string Summary,
