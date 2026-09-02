@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 
 namespace MyMcp.Server;
@@ -125,8 +126,18 @@ public sealed class WorkspaceService
         return builder.ToString().TrimEnd();
     }
 
-    public string WriteTextFile(string relativePath, string content, bool createDirectories)
+    public string ReadTextFilePage(string relativePath, int startLine, int lineCount)
     {
+        var content = ReadTextFile(relativePath, startLine, lineCount);
+        var filePath = ResolvePath(relativePath);
+        var totalLines = File.ReadLines(filePath).Count();
+        var nextLine = Math.Max(1, startLine) + Math.Max(1, lineCount);
+        return $"{content}\n\npageStartLine: {Math.Max(1, startLine)}\npageSize: {Math.Max(1, lineCount)}\nhasMore: {nextLine <= totalLines}\nnextStartLine: {nextLine}";
+    }
+
+    public string WriteTextFile(string relativePath, string content, bool createDirectories, string? approvalToken = null)
+    {
+        EnsureWriteAllowed(approvalToken);
         var filePath = ResolvePath(relativePath);
         var directory = Path.GetDirectoryName(filePath);
 
@@ -140,8 +151,240 @@ public sealed class WorkspaceService
             throw new DirectoryNotFoundException($"Target directory does not exist: {directory}");
         }
 
+        BackupFile(filePath);
         File.WriteAllText(filePath, content, Encoding.UTF8);
+        WriteAudit("write", GetRelativePath(filePath), $"chars={content.Length}");
         return $"Wrote {GetRelativePath(filePath)} ({content.Length} chars)";
+    }
+
+    public string WriteTextFilePage(string relativePath, string content, int page, bool append, bool createDirectories, string? approvalToken = null)
+    {
+        EnsureWriteAllowed(approvalToken);
+        if (page < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(page), "Page must be at least 1.");
+        }
+
+        if (page > 1 && !append)
+        {
+            throw new InvalidOperationException("Pages after the first must set append=true.");
+        }
+
+        if (page == 1 && append)
+        {
+            throw new InvalidOperationException("The first page must set append=false.");
+        }
+
+        var filePath = ResolvePath(relativePath);
+        var directory = Path.GetDirectoryName(filePath);
+        if (page > 1 && !File.Exists(filePath))
+        {
+            throw new FileNotFoundException("The first page must be written before later pages.", filePath);
+        }
+
+        if (!string.IsNullOrEmpty(directory) && createDirectories)
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        BackupFile(filePath);
+        File.AppendAllText(filePath, page == 1 ? content : Environment.NewLine + content, Encoding.UTF8);
+        WriteAudit("write-page", GetRelativePath(filePath), $"page={page};chars={content.Length}");
+        return $"Wrote page {page} to {GetRelativePath(filePath)} ({content.Length} chars)";
+    }
+
+    public string GetContextBudget()
+    {
+        var budget = 12000;
+        var configured = Environment.GetEnvironmentVariable("MYMCP_CONTEXT_TOKEN_BUDGET");
+        if (int.TryParse(configured, out var parsed) && parsed > 0)
+        {
+            budget = parsed;
+        }
+
+        var contextFiles = new[]
+        {
+            MainContextRelativePath,
+            Path.Combine(SpecsRootRelativePath, "README.md"),
+            Path.Combine(DocsRootRelativePath, "README.md")
+        };
+        var chars = contextFiles
+            .Select(ResolvePath)
+            .Where(File.Exists)
+            .Sum(path => new FileInfo(path).Length);
+        var estimatedTokens = (int)Math.Ceiling(chars / 4.0);
+
+        return string.Join(Environment.NewLine,
+            $"configuredContextTokenBudget: {budget}",
+            $"estimatedCoreContextTokens: {estimatedTokens}",
+            $"estimatedRemainingConfiguredTokens: {Math.Max(0, budget - estimatedTokens)}",
+            "modelPrivateTokenBalance: unavailable",
+            "recommendation: use ReadFilePage for large files and refresh this report before the next large task.");
+    }
+
+    public string GetWorkspacePermissions()
+    {
+        var approval = string.Equals(Environment.GetEnvironmentVariable("MYMCP_REQUIRE_WRITE_APPROVAL"), "true", StringComparison.OrdinalIgnoreCase);
+        var tokenConfigured = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MYMCP_WRITE_APPROVAL_TOKEN"));
+        return string.Join(Environment.NewLine,
+            $"workspaceRoot: {RootPath}",
+            "read: allowed",
+            $"write: {(approval ? "allowed with approval token" : "allowed")}",
+            "delete: disabled",
+            "gitWrite: disabled",
+            $"approvalTokenConfigured: {tokenConfigured}");
+    }
+
+    public string RollbackLastChange(string? approvalToken = null)
+    {
+        EnsureWriteAllowed(approvalToken);
+        var backupRoot = Path.Combine(RootPath, ".mymcp", "backups");
+        if (!Directory.Exists(backupRoot)) throw new InvalidOperationException("No backup is available.");
+        var backup = Directory.EnumerateFiles(backupRoot, "*.bak", SearchOption.AllDirectories).OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
+        if (backup is null) throw new InvalidOperationException("No backup is available.");
+        var relative = Path.GetRelativePath(backupRoot, backup);
+        var original = Path.Combine(RootPath, relative[..^4]);
+        Directory.CreateDirectory(Path.GetDirectoryName(original)!);
+        File.Copy(backup, original, true);
+        WriteAudit("rollback", GetRelativePath(original), $"backup={GetRelativePath(backup)}");
+        return $"Restored {GetRelativePath(original)} from backup.";
+    }
+
+    public string ValidateFeatureSdd(string featureSlug)
+    {
+        var slug = NormalizeSlug(featureSlug);
+        var root = Path.Combine(FeatureSpecsRootRelativePath, slug);
+        var required = new[] { "spec.md", "tasks.md", "notes.md", "tests.md" };
+        var missing = required.Where(name => !File.Exists(ResolvePath(Path.Combine(root, name)))).ToArray();
+        if (missing.Length > 0)
+        {
+            throw new InvalidOperationException($"SDD validation failed for '{slug}'. Missing: {string.Join(", ", missing)}");
+        }
+
+        var spec = File.ReadAllText(ResolvePath(Path.Combine(root, "spec.md")), Encoding.UTF8);
+        if (!spec.Contains("## Acceptance Criteria", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"SDD validation failed for '{slug}'. spec.md has no Acceptance Criteria section.");
+        }
+
+        var criteriaCount = spec.Split("## Acceptance Criteria", 2, StringSplitOptions.None)[1]
+            .Split("## ", 2, StringSplitOptions.None)[0]
+            .Split('\n')
+            .Count(line => line.TrimStart().StartsWith("- ", StringComparison.Ordinal));
+        var testPlan = File.ReadAllText(ResolvePath(Path.Combine(root, "tests.md")), Encoding.UTF8);
+        var coverageRows = testPlan.Split('\n').Count(line => line.TrimStart().StartsWith("|", StringComparison.Ordinal) && !line.Contains("---", StringComparison.Ordinal));
+        if (criteriaCount > 0 && coverageRows < criteriaCount)
+        {
+            throw new InvalidOperationException($"SDD validation failed for '{slug}'. tests.md must map every acceptance criterion in its Coverage Matrix.");
+        }
+
+        return $"SDD validation passed for feature '{slug}'. Required artifacts are present.";
+    }
+
+    public string RunProjectTests(string command, string kind)
+    {
+        if (string.IsNullOrWhiteSpace(command))
+        {
+            throw new ArgumentException("Test command must not be empty.", nameof(command));
+        }
+
+        var trimmed = command.Trim();
+        var allowed = new[] { "dotnet test", "npm test", "npm run test", "cargo test", "pytest", "python -m pytest" };
+        var extra = Environment.GetEnvironmentVariable("MYMCP_ALLOWED_TEST_COMMANDS")?.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? [];
+        if (!allowed.Concat(extra).Any(prefix => trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) || trimmed.Any(ch => "&|><;".Contains(ch)))
+        {
+            throw new InvalidOperationException("Test command rejected. Use a known test command or authorize its prefix with MYMCP_ALLOWED_TEST_COMMANDS.");
+        }
+
+        var shell = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/sh";
+        var shellArguments = OperatingSystem.IsWindows() ? $"/c {trimmed}" : $"-lc \"{trimmed.Replace("\"", "\\\"")}\"";
+        var startInfo = new ProcessStartInfo(shell, shellArguments)
+        {
+            WorkingDirectory = RootPath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Could not start test process.");
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        var result = $"kind={kind};command={trimmed};exitCode={process.ExitCode}\n{output}\n{error}".Trim();
+        WriteAudit("test", kind, result);
+        return result;
+    }
+
+    public string GetTestRunHistory(int maxEntries)
+    {
+        var path = ResolvePath(Path.Combine(".mymcp", "audit", "operations.log"));
+        if (!File.Exists(path)) return "No test executions recorded.";
+        var lines = File.ReadAllLines(path, Encoding.UTF8)
+            .Where(line => line.Contains("|test|", StringComparison.OrdinalIgnoreCase))
+            .TakeLast(Math.Clamp(maxEntries, 1, 100))
+            .ToArray();
+        return lines.Length == 0 ? "No test executions recorded." : string.Join(Environment.NewLine, lines);
+    }
+
+    public string GetGitStatus() => RunGit("status --short");
+
+    public string GetGitDiff() => RunGit("diff --");
+
+    public string DetectProjectLanguages()
+    {
+        var extensions = EnumerateTextFiles(RootPath).Select(Path.GetExtension).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var languages = new List<string>();
+        if (extensions.Any(e => e is ".cs" or ".csproj" or ".sln" or ".slnx")) languages.Add("C#/.NET (dotnet test)");
+        if (extensions.Any(e => e is ".pas" or ".dpr" or ".dproj" or ".dfm")) languages.Add("Delphi/Object Pascal (configure test command)");
+        if (File.Exists(Path.Combine(RootPath, "Cargo.toml"))) languages.Add("Rust (cargo test)");
+        if (File.Exists(Path.Combine(RootPath, "package.json"))) languages.Add("JavaScript/TypeScript (npm test)");
+        if (extensions.Any(e => e is ".py")) languages.Add("Python (pytest)");
+        return languages.Count == 0 ? "No supported project markers detected." : string.Join(Environment.NewLine, languages);
+    }
+
+    public string GetIncrementalContext()
+    {
+        var changed = RunGit("diff --name-only");
+        var core = new[] { MainContextRelativePath, Path.Combine(SpecsRootRelativePath, "README.md") }
+            .Where(path => File.Exists(ResolvePath(path)));
+        return string.Join(Environment.NewLine,
+            "# Incremental context",
+            "Read these durable rules first:",
+            string.Join(Environment.NewLine, core.Select(path => $"- {path}")),
+            "Changed files from git:",
+            string.IsNullOrWhiteSpace(changed) ? "(working tree clean)" : changed,
+            "Use ReadFilePage for changed files larger than the context budget.");
+    }
+
+    public string ListAgentProfiles() => "analysis\nimplementation\ntests\nreview\ndocumentation";
+
+    public string ReadAgentProfile(string profile)
+        => profile.Trim().ToLowerInvariant() switch
+        {
+            "analysis" => "Read context, specs and git diff. Do not write files. Return risks, dependencies and questions.",
+            "implementation" => "Read the full SDD literature, implement the smallest coherent change, update tasks and generate tests.",
+            "tests" => "Read tests.md and acceptance criteria, create meaningful unit tests, run the configured command and validate the feature gate.",
+            "review" => "Inspect git diff, security boundaries, regressions, SDD completeness and test evidence. Do not modify files.",
+            "documentation" => "Read the current code and decisions, then update concise durable documentation without duplicating transient details.",
+            _ => throw new ArgumentException("Unknown profile. Use analysis, implementation, tests, review or documentation.", nameof(profile))
+        };
+
+    public string ReadDecisionMemory()
+    {
+        var path = Path.Combine(".mymcp", "context", "decisions.md");
+        return File.Exists(ResolvePath(path)) ? ReadMarkdownFile(path) : "No durable decisions recorded.";
+    }
+
+    public string WriteDecisionMemory(string decision, string area, string? approvalToken = null)
+    {
+        if (string.IsNullOrWhiteSpace(decision)) throw new ArgumentException("Decision must not be empty.", nameof(decision));
+        EnsureWriteAllowed(approvalToken);
+        var path = ResolvePath(Path.Combine(".mymcp", "context", "decisions.md"));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        BackupFile(path);
+        File.AppendAllText(path, $"\n## {area.Trim()} - {DateTimeOffset.UtcNow:yyyy-MM-dd}\n\n{decision.Trim()}\n", Encoding.UTF8);
+        WriteAudit("decision", GetRelativePath(path), area);
+        return $"Recorded decision in {GetRelativePath(path)}.";
     }
 
     public string ReadMarkdownFile(string relativePath)
@@ -190,6 +433,7 @@ public sealed class WorkspaceService
         File.WriteAllText(architecturePath, BuildArchitectureDocTemplate(request), Encoding.UTF8);
         File.WriteAllText(runbookPath, BuildRunbookDocTemplate(request), Encoding.UTF8);
         File.WriteAllText(decisionsPath, BuildDecisionsDocTemplate(request), Encoding.UTF8);
+        WriteAudit("create-docs", GetRelativePath(docsRoot), $"slug={slug}");
 
         return string.Join(
             Environment.NewLine,
@@ -222,6 +466,13 @@ public sealed class WorkspaceService
         File.WriteAllText(specPath, BuildFeatureSpecTemplate(request), Encoding.UTF8);
         File.WriteAllText(tasksPath, BuildFeatureTasksTemplate(request), Encoding.UTF8);
         File.WriteAllText(notesPath, BuildFeatureNotesTemplate(request), Encoding.UTF8);
+        WriteAudit("create-feature", GetRelativePath(featureRoot), $"slug={slug}");
+
+        var testPlanResult = CreateFeatureTestPlan(new FeatureTestPlanRequest(
+            request.Slug,
+            request.Title,
+            request.Summary,
+            []));
 
         return string.Join(
             Environment.NewLine,
@@ -229,7 +480,8 @@ public sealed class WorkspaceService
             {
                 $"Created feature spec: {GetRelativePath(specPath)}",
                 $"Created task plan: {GetRelativePath(tasksPath)}",
-                $"Created notes: {GetRelativePath(notesPath)}"
+                $"Created notes: {GetRelativePath(notesPath)}",
+                testPlanResult
             });
     }
 
@@ -247,7 +499,66 @@ public sealed class WorkspaceService
 
         Directory.CreateDirectory(Path.GetDirectoryName(taskPath)!);
         File.WriteAllText(taskPath, BuildTaskDocTemplate(request), Encoding.UTF8);
+        WriteAudit("create-task", GetRelativePath(taskPath), $"slug={slug}");
         return $"Created task doc: {GetRelativePath(taskPath)}";
+    }
+
+    public string CreateFeatureTestPlan(FeatureTestPlanRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var slug = NormalizeSlug(request.Slug);
+        var featureRoot = ResolvePath(Path.Combine(FeatureSpecsRootRelativePath, slug));
+        Directory.CreateDirectory(featureRoot);
+
+        var planPath = Path.Combine(featureRoot, "tests.md");
+        if (File.Exists(planPath) && !request.OverwriteExisting)
+        {
+            throw new InvalidOperationException($"Feature test plan already exists: {slug}");
+        }
+
+        File.WriteAllText(planPath, BuildFeatureTestPlanTemplate(request, slug), Encoding.UTF8);
+
+        var tasksPath = Path.Combine(featureRoot, "tasks.md");
+        var tasks = File.Exists(tasksPath) ? File.ReadAllText(tasksPath, Encoding.UTF8) : $"# Tasks for {request.Title}\n";
+        var requiredTasks = "\n## Mandatory Unit Tests\n\n- [ ] Create unit tests for the feature behavior\n- [ ] Cover acceptance criteria and failure cases\n- [ ] Run the project test command\n- [ ] Run ValidateFeatureTests and resolve every failure\n";
+        if (!tasks.Contains("## Mandatory Unit Tests", StringComparison.Ordinal))
+        {
+            File.WriteAllText(tasksPath, tasks.TrimEnd() + Environment.NewLine + requiredTasks, Encoding.UTF8);
+        }
+
+        return string.Join(Environment.NewLine,
+            $"Created mandatory test plan: {GetRelativePath(planPath)}",
+            "Added mandatory unit-test tasks to the feature task list.",
+            "Implement the tests, then call ValidateFeatureTests before completing the feature.");
+    }
+
+    public string ValidateFeatureTests(string featureSlug, IReadOnlyList<string> testPaths)
+    {
+        var slug = NormalizeSlug(featureSlug);
+        var planPath = ResolvePath(Path.Combine(FeatureSpecsRootRelativePath, slug, "tests.md"));
+        if (!File.Exists(planPath))
+        {
+            throw new InvalidOperationException($"Missing mandatory test plan: {GetRelativePath(planPath)}. Call CreateFeatureTestPlan first.");
+        }
+
+        if (testPaths is null || testPaths.Count == 0)
+        {
+            throw new InvalidOperationException("No unit-test paths were provided. Create the tests and pass their workspace-relative paths.");
+        }
+
+        var missing = testPaths
+            .Where(string.IsNullOrWhiteSpace)
+            .Concat(testPaths.Where(path => !string.IsNullOrWhiteSpace(path) && !File.Exists(ResolvePath(path))))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (missing.Length > 0)
+        {
+            throw new InvalidOperationException($"Unit-test gate failed. Missing test files: {string.Join(", ", missing)}");
+        }
+
+        return $"Unit-test gate passed for feature '{slug}'. Validated {testPaths.Count} test file(s). Run the project's test command before final delivery.";
     }
 
     public IReadOnlyList<string> ListSpecArtifacts()
@@ -280,8 +591,9 @@ public sealed class WorkspaceService
             .ToArray();
     }
 
-    public string ApplyTextEdits(string relativePath, IReadOnlyList<TextEditRequest> edits)
+    public string ApplyTextEdits(string relativePath, IReadOnlyList<TextEditRequest> edits, string? approvalToken = null)
     {
+        EnsureWriteAllowed(approvalToken);
         if (edits.Count == 0)
         {
             throw new ArgumentException("At least one edit is required.", nameof(edits));
@@ -335,7 +647,9 @@ public sealed class WorkspaceService
             return $"No changes applied to {GetRelativePath(filePath)}";
         }
 
+        BackupFile(filePath);
         File.WriteAllText(filePath, content, Encoding.UTF8);
+        WriteAudit("edit", GetRelativePath(filePath), $"chars={content.Length};edits={edits.Count}");
         return $"Updated {GetRelativePath(filePath)} ({content.Length} chars)";
     }
 
@@ -493,6 +807,53 @@ public sealed class WorkspaceService
         return count;
     }
 
+    private string RunGit(string arguments)
+    {
+        var startInfo = new ProcessStartInfo("git", arguments)
+        {
+            WorkingDirectory = RootPath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Could not start git.");
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0) throw new InvalidOperationException(error.Trim());
+        return string.IsNullOrWhiteSpace(output) ? "(clean)" : output.TrimEnd();
+    }
+
+    private void WriteAudit(string operation, string target, string details)
+    {
+        if (target.StartsWith(".mymcp/audit", StringComparison.OrdinalIgnoreCase)) return;
+        var auditPath = Path.Combine(RootPath, ".mymcp", "audit", "operations.log");
+        Directory.CreateDirectory(Path.GetDirectoryName(auditPath)!);
+        var safeDetails = details.Replace(Environment.NewLine, " ").Replace("\r", " ").Replace("\n", " ");
+        File.AppendAllText(auditPath, $"{DateTimeOffset.UtcNow:O}|{operation}|{target}|{safeDetails}{Environment.NewLine}", Encoding.UTF8);
+    }
+
+    private void EnsureWriteAllowed(string? approvalToken)
+    {
+        if (!string.Equals(Environment.GetEnvironmentVariable("MYMCP_REQUIRE_WRITE_APPROVAL"), "true", StringComparison.OrdinalIgnoreCase)) return;
+        var expected = Environment.GetEnvironmentVariable("MYMCP_WRITE_APPROVAL_TOKEN");
+        if (string.IsNullOrWhiteSpace(expected) || !string.Equals(expected, approvalToken, StringComparison.Ordinal))
+        {
+            throw new UnauthorizedAccessException("Write approval is required. Configure MYMCP_WRITE_APPROVAL_TOKEN and pass its value as approvalToken.");
+        }
+    }
+
+    private void BackupFile(string filePath)
+    {
+        if (!File.Exists(filePath)) return;
+        var backupRoot = Path.Combine(RootPath, ".mymcp", "backups");
+        var relative = GetRelativePath(filePath);
+        var backupPath = Path.Combine(backupRoot, relative + ".bak");
+        Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
+        File.Copy(filePath, backupPath, true);
+    }
+
     private static string NormalizeSlug(string slug)
     {
         if (string.IsNullOrWhiteSpace(slug))
@@ -601,6 +962,47 @@ public sealed class WorkspaceService
         - Record tradeoffs, open questions, and follow-ups.
         """;
 
+    private static string BuildFeatureTestPlanTemplate(FeatureTestPlanRequest request, string slug)
+    {
+        var paths = request.ExpectedTestPaths.Count == 0
+            ? "- Add the relative path of every unit-test file created for this feature."
+            : string.Join(Environment.NewLine, request.ExpectedTestPaths.Select(path => $"- [ ] `{path}`"));
+
+        return $"""
+        # Unit Test Plan - {request.Title}
+
+        Feature slug: `{slug}`
+
+        ## Behavior Under Test
+
+        {request.Summary}
+
+        ## Required Coverage
+
+        - [ ] Happy path for each acceptance criterion
+        - [ ] Invalid input and boundary cases
+        - [ ] Error handling and side effects
+        - [ ] Regression case for the original problem
+
+        ## Expected Test Files
+
+        {paths}
+
+        ## Coverage Matrix
+
+        | Acceptance criterion | Test name or file | Status |
+        | --- | --- | --- |
+        | Criterion 1 | Add a test reference | TODO |
+        | Criterion 2 | Add a test reference | TODO |
+
+        ## Completion Gate
+
+        - [ ] Unit tests are implemented and meaningful.
+        - [ ] The project's test command passes.
+        - [ ] `ValidateFeatureTests` passes for every test file.
+        """;
+    }
+
     private static string BuildTaskDocTemplate(TaskDocRequest request)
         => $"""
         # {request.Title}
@@ -707,6 +1109,13 @@ public sealed record TaskDocRequest(
     string Slug,
     string Title,
     string Summary,
+    bool OverwriteExisting = false);
+
+public sealed record FeatureTestPlanRequest(
+    string Slug,
+    string Title,
+    string Summary,
+    IReadOnlyList<string> ExpectedTestPaths,
     bool OverwriteExisting = false);
 
 public sealed record DocsPackRequest(

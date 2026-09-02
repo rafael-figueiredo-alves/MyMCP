@@ -32,9 +32,9 @@ function activate(context) {
           return [];
         }
 
-        return folders.map((folder, index) =>
-          createServerDefinition(folder, extensionRoot, serverProject, serverProjectDir, providerVersion, index)
-        );
+        return Promise.all(folders.map((folder, index) =>
+          createServerDefinition(context, folder, extensionRoot, serverProject, serverProjectDir, providerVersion, index)
+        ));
       },
       resolveMcpServerDefinition: async (server) => server
     })
@@ -110,6 +110,28 @@ function activate(context) {
     await setActiveProjectUri(context, pick.folder.uri.toString());
     treeProvider.refresh();
     vscode.window.showInformationMessage(`Active project set to ${pick.folder.name}.`);
+  });
+
+  registerCommand(context, 'mymcp.showVersion', async () => {
+    const version = context.extension.packageJSON.version;
+    const message = `MyMCP Connector version ${version}`;
+    output.appendLine(`[info] ${message}`);
+    vscode.window.showInformationMessage(message);
+  });
+
+  registerCommand(context, 'mymcp.runUnitTests', async () => {
+    await runProjectTests(context, 'unit');
+  });
+
+  registerCommand(context, 'mymcp.runAutomatedTests', async () => {
+    await runProjectTests(context, 'automated');
+  });
+
+  registerCommand(context, 'mymcp.configure', async () => {
+    await configureProject(context);
+    providerVersion += 1;
+    didChangeEmitter.fire();
+    treeProvider.refresh();
   });
 
   registerCommand(context, 'mymcp.bootstrapProjectDocs', async () => {
@@ -274,6 +296,73 @@ function activate(context) {
     await openFile(path.join(featureRoot, 'spec.md'));
   });
 
+  registerCommand(context, 'mymcp.implementFeature', async () => {
+    const folder = await getTargetProjectFolder(context, false);
+    if (!folder) {
+      return;
+    }
+
+    const featureRoot = path.join(folder.uri.fsPath, FEATURES_ROOT_RELATIVE);
+    const features = listFeatureDirectories(featureRoot, folder.uri.fsPath);
+    if (features.length === 0) {
+      vscode.window.showInformationMessage('Nenhuma feature encontrada. Crie uma especificacao primeiro.');
+      return;
+    }
+
+    const pick = await vscode.window.showQuickPick(
+      features.map((feature) => ({ label: feature.slug, description: feature.relativePath, feature })),
+      { title: 'Selecionar feature para implementar', placeHolder: 'Escolha uma feature SDD' }
+    );
+    if (!pick) {
+      return;
+    }
+
+    const literature = listMarkdownArtifacts(pick.feature.absolutePath)
+      .concat(listMarkdownArtifacts(path.join(folder.uri.fsPath, '.mymcp', 'context')))
+      .concat(listMarkdownArtifacts(path.join(folder.uri.fsPath, DOCS_ROOT_RELATIVE)))
+      .map((filePath) => path.relative(folder.uri.fsPath, filePath).replace(/\\/g, '/'))
+      .filter((filePath, index, files) => files.indexOf(filePath) === index);
+
+    const prompt = [
+      `Quero implementar a feature '${pick.feature.slug}' no projeto '${folder.name}'.`,
+      'Siga o fluxo SDD e use o servidor MCP MyMCP para ler todo o contexto antes de alterar o codigo.',
+      `Feature selecionada: ./${pick.feature.relativePath}`,
+      `Literatura disponivel: ${literature.map((file) => `./${file}`).join(', ') || '(nenhum arquivo Markdown encontrado)'}.`,
+      'Leia main.md, spec.md, tasks.md, notes.md, tests.md e a documentacao relacionada antes de implementar.',
+      'Implemente a feature no codigo existente, preserve as regras do contexto, gere testes unitarios para os criterios de aceitacao, execute os testes configurados e chame validate_feature_tests antes de concluir.',
+      'Se houver ambiguidades, registre-as em notes.md e informe-as antes de assumir uma decisao.'
+    ].join('\n\n');
+
+    try {
+      await vscode.commands.executeCommand('workbench.action.chat.open', { query: prompt });
+    } catch (error) {
+      await vscode.env.clipboard.writeText(prompt);
+      vscode.window.showWarningMessage(`Nao foi possivel abrir o Chat automaticamente. O prompt foi copiado para a area de transferencia: ${error.message}`);
+    }
+  });
+
+  registerCommand(context, 'mymcp.selectAgentProfile', async () => {
+    const profiles = {
+      analysis: 'Analise',
+      implementation: 'Implementacao',
+      tests: 'Testes',
+      review: 'Revisao',
+      documentation: 'Documentacao'
+    };
+    const pick = await vscode.window.showQuickPick(
+      Object.entries(profiles).map(([id, label]) => ({ label, id })),
+      { title: 'Selecionar perfil do agente', placeHolder: 'Escolha o modo de trabalho' }
+    );
+    if (!pick) return;
+    const prompt = `Atue no perfil '${pick.id}' do MyMCP. Use a ferramenta read_agent_profile com profile='${pick.id}' e siga integralmente as instrucoes retornadas. Antes de qualquer alteracao, leia o contexto principal e o contexto incremental.`;
+    try {
+      await vscode.commands.executeCommand('workbench.action.chat.open', { query: prompt });
+    } catch (error) {
+      await vscode.env.clipboard.writeText(prompt);
+      vscode.window.showWarningMessage(`Prompt copiado para a area de transferencia: ${error.message}`);
+    }
+  });
+
   registerCommand(context, 'mymcp.createTaskDoc', async () => {
     const folder = await getTargetProjectFolder(context, false);
     if (!folder) {
@@ -320,6 +409,127 @@ function activate(context) {
 
     await openFile(path.join(docsRoot, 'README.md'));
   });
+}
+
+async function runProjectTests(context, kind) {
+  const folder = await getTargetProjectFolder(context, true);
+  if (!folder) {
+    return;
+  }
+
+  const configuration = vscode.workspace.getConfiguration('mymcp');
+  let command = kind === 'unit'
+    ? configuration.get('unitTestCommand', '')
+    : configuration.get('automatedTestCommand', '');
+
+  if (!command && kind === 'unit') {
+    command = detectUnitTestCommand(folder.uri.fsPath);
+  }
+
+  if (!command) {
+    const setting = kind === 'unit' ? 'mymcp.unitTestCommand' : 'mymcp.automatedTestCommand';
+    vscode.window.showWarningMessage(
+      `Nenhum comando de testes ${kind === 'unit' ? 'unitarios' : 'automatizados'} foi configurado. Defina ${setting} nas configuracoes do workspace.`
+    );
+    return;
+  }
+
+  const terminal = vscode.window.createTerminal({
+    name: kind === 'unit' ? 'MyMCP - Testes unitarios' : 'MyMCP - Testes automatizados',
+    cwd: folder.uri.fsPath
+  });
+  terminal.show(true);
+  terminal.sendText(command);
+}
+
+async function configureProject(context) {
+  const folder = await getTargetProjectFolder(context, true);
+  if (!folder) return;
+
+  const configuration = vscode.workspace.getConfiguration('mymcp', folder.uri);
+  const requireApproval = await vscode.window.showQuickPick(
+    [
+      { label: 'Exigir aprovacao para escritas', value: true },
+      { label: 'Permitir escritas sem token', value: false }
+    ],
+    { title: 'Permissoes de escrita do MyMCP', placeHolder: `Atual: ${configuration.get('requireWriteApproval', false) ? 'aprovacao exigida' : 'sem aprovacao'}` }
+  );
+  if (!requireApproval) return;
+  await configuration.update('requireWriteApproval', requireApproval.value, vscode.ConfigurationTarget.WorkspaceFolder);
+
+  if (requireApproval.value) {
+    const token = await vscode.window.showInputBox({
+      title: 'Token de aprovacao',
+      prompt: 'Informe um token que o agente devera enviar em approvalToken.',
+      password: true,
+      ignoreFocusOut: true,
+      value: await context.secrets.get(`mymcp.writeApprovalToken.${folder.uri.toString()}`) ?? ''
+    });
+    if (token === undefined) return;
+    if (token.trim()) {
+      await context.secrets.store(`mymcp.writeApprovalToken.${folder.uri.toString()}`, token.trim());
+    } else {
+      await context.secrets.delete(`mymcp.writeApprovalToken.${folder.uri.toString()}`);
+    }
+  }
+
+  const unit = await vscode.window.showInputBox({
+    title: 'Comando de testes unitarios',
+    prompt: 'Deixe vazio para deteccao automatica.',
+    value: configuration.get('unitTestCommand', '')
+  });
+  if (unit !== undefined) await configuration.update('unitTestCommand', unit.trim(), vscode.ConfigurationTarget.WorkspaceFolder);
+
+  const automated = await vscode.window.showInputBox({
+    title: 'Comando de testes automatizados',
+    prompt: 'Exemplo: npm run test:e2e. Deixe vazio se ainda nao implementado.',
+    value: configuration.get('automatedTestCommand', '')
+  });
+  if (automated !== undefined) await configuration.update('automatedTestCommand', automated.trim(), vscode.ConfigurationTarget.WorkspaceFolder);
+
+  const allowed = await vscode.window.showInputBox({
+    title: 'Comandos adicionais autorizados',
+    prompt: 'Prefixos separados por ponto e virgula; deixe vazio para manter apenas comandos padrao.',
+    value: configuration.get('allowedTestCommands', '')
+  });
+  if (allowed !== undefined) await configuration.update('allowedTestCommands', allowed.trim(), vscode.ConfigurationTarget.WorkspaceFolder);
+
+  const budget = await vscode.window.showInputBox({
+    title: 'Orcamento de contexto',
+    prompt: 'Quantidade estimada de tokens para o contexto principal.',
+    value: String(configuration.get('contextTokenBudget', 12000)),
+    validateInput: (value) => /^\d+$/.test(value) && Number(value) >= 1000 ? undefined : 'Informe um numero inteiro maior ou igual a 1000.'
+  });
+  if (budget !== undefined) await configuration.update('contextTokenBudget', Number(budget), vscode.ConfigurationTarget.WorkspaceFolder);
+
+  const restart = await vscode.window.showWarningMessage(
+    'Configuracoes do MyMCP salvas. Reinicie o servidor MCP para aplicar permissoes, token e variaveis atualizadas.',
+    'Reiniciar agora'
+  );
+  if (restart === 'Reiniciar agora') {
+    await vscode.commands.executeCommand('mymcp.restartMcpServer');
+  }
+}
+
+function detectUnitTestCommand(projectRoot) {
+  if (findFile(projectRoot, ['*.sln', '*.slnx', '*.csproj'])) return 'dotnet test';
+  if (fs.existsSync(path.join(projectRoot, 'package.json'))) return 'npm test';
+  if (fs.existsSync(path.join(projectRoot, 'Cargo.toml'))) return 'cargo test';
+  return '';
+}
+
+function findFile(root, patterns) {
+  try {
+    return fs.readdirSync(root).some((entry) => {
+      const fullPath = path.join(root, entry);
+      if (fs.statSync(fullPath).isFile()) {
+        return patterns.some((pattern) => pattern === '*.' + path.extname(entry).slice(1) && entry.endsWith(pattern.slice(1)));
+      }
+      return false;
+    });
+  } catch {
+    return false;
+  }
 }
 
 function deactivate() {}
@@ -377,10 +587,12 @@ class MyMcpTreeProvider {
       this.createStatusItem(),
       this.createProjectItem(activeLabel),
       this.createGroupItem('Server', 'server', 'gear', [
-        this.createActionItem('Start MCP Server', 'play', 'mymcp.startMcpServer'),
-        this.createActionItem('Restart MCP Server', 'refresh', 'mymcp.restartMcpServer'),
-        this.createActionItem('Test Connection', 'check', 'mymcp.testConnection'),
-        this.createActionItem('Open MCP Servers', 'list-selection', 'mymcp.openMcpServers')
+        this.createActionItem('Iniciar servidor MCP', 'play', 'mymcp.startMcpServer'),
+        this.createActionItem('Reiniciar servidor MCP', 'refresh', 'mymcp.restartMcpServer'),
+        this.createActionItem('Testar conexao', 'check', 'mymcp.testConnection'),
+        this.createActionItem('Abrir servidores MCP', 'list-selection', 'mymcp.openMcpServers'),
+        this.createActionItem('Executar testes unitarios', 'beaker', 'mymcp.runUnitTests'),
+        this.createActionItem('Executar testes automatizados', 'play-circle', 'mymcp.runAutomatedTests')
       ]),
       this.createGroupItem('Project Context', 'context', 'book', [
         this.createActionItem('Select Active Project', 'workspace', 'mymcp.selectActiveProject'),
@@ -392,6 +604,9 @@ class MyMcpTreeProvider {
         this.createActionItem('Open Specs Root', 'folder-opened', 'mymcp.openSpecsRoot'),
         this.createActionItem('Open Active Specs', 'library', 'mymcp.openActiveProjectSpecs'),
         this.createActionItem('Create Feature Spec', 'add', 'mymcp.createFeatureSpec'),
+        this.createActionItem('Implementar feature com agente', 'sparkle', 'mymcp.implementFeature'),
+        this.createActionItem('Selecionar perfil do agente', 'account', 'mymcp.selectAgentProfile'),
+        this.createActionItem('Configurar projeto', 'settings-gear', 'mymcp.configure'),
         this.createActionItem('Create Task Doc', 'checklist', 'mymcp.createTaskDoc'),
         this.createActionItem('List Spec Artifacts', 'list-tree', 'mymcp.listSpecArtifacts')
       ]),
@@ -400,7 +615,8 @@ class MyMcpTreeProvider {
         this.createActionItem('Open Active Docs Pack', 'library', 'mymcp.openActiveDocsPack'),
         this.createActionItem('Create Docs Pack', 'add', 'mymcp.createDocsPack'),
         this.createActionItem('List Docs Artifacts', 'list-tree', 'mymcp.listDocsArtifacts')
-      ])
+      ]),
+      this.createActionItem('Versao da extensao', 'info', 'mymcp.showVersion')
     ];
   }
 
@@ -568,6 +784,25 @@ function listMarkdownArtifacts(rootPath) {
   return files.filter((filePath) => filePath.toLowerCase().endsWith('.md'));
 }
 
+function listFeatureDirectories(rootPath, workspaceRoot = rootPath) {
+  if (!fs.existsSync(rootPath)) {
+    return [];
+  }
+
+  return fs.readdirSync(rootPath, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      const absolutePath = path.join(rootPath, entry.name);
+      return {
+        slug: entry.name,
+        absolutePath,
+        relativePath: path.relative(workspaceRoot, absolutePath).replace(/\\/g, '/')
+      };
+    })
+    .filter((feature) => fs.existsSync(path.join(feature.absolutePath, 'spec.md')))
+    .sort((left, right) => left.slug.localeCompare(right.slug));
+}
+
 function walk(dir, files) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (entry.name === 'node_modules' || entry.name === 'bin' || entry.name === 'obj') {
@@ -596,15 +831,27 @@ async function writeIfMissing(filePath, content) {
   }
 }
 
-function createServerDefinition(folder, extensionRoot, serverProject, serverProjectDir, providerVersion, index) {
+async function createServerDefinition(context, folder, extensionRoot, serverProject, serverProjectDir, providerVersion, index) {
   const launch = resolveServerLaunch(folder, extensionRoot, serverProject, serverProjectDir);
+  const configuration = vscode.workspace.getConfiguration('mymcp', folder.uri);
+  const env = {};
+  if (configuration.get('requireWriteApproval', false)) {
+    env.MYMCP_REQUIRE_WRITE_APPROVAL = 'true';
+    const token = await context.secrets.get(`mymcp.writeApprovalToken.${folder.uri.toString()}`);
+    if (token) env.MYMCP_WRITE_APPROVAL_TOKEN = token;
+  }
+  const allowed = configuration.get('allowedTestCommands', '');
+  if (allowed) env.MYMCP_ALLOWED_TEST_COMMANDS = allowed;
+  const contextBudget = configuration.get('contextTokenBudget', 12000);
+  if (contextBudget) env.MYMCP_CONTEXT_TOKEN_BUDGET = String(contextBudget);
 
   return new vscode.McpStdioServerDefinition({
-    label: `MyMCP (${folder.name})`,
-    command: launch.command,
-    args: launch.args,
-    cwd: vscode.Uri.file(serverProjectDir),
-    version: `0.1.0.${providerVersion}.${index}`
+      label: `MyMCP (${folder.name})`,
+      command: launch.command,
+      args: launch.args,
+      cwd: vscode.Uri.file(launch.cwd),
+      env,
+      version: `0.1.11.${providerVersion}.${index}`
   });
 }
 
@@ -613,7 +860,8 @@ function resolveServerLaunch(folder, extensionRoot, serverProject, serverProject
   if (fs.existsSync(packagedExe)) {
     return {
       command: packagedExe,
-      args: ['--root', folder.uri.fsPath]
+      args: ['--root', folder.uri.fsPath],
+      cwd: path.dirname(packagedExe)
     };
   }
 
@@ -621,7 +869,8 @@ function resolveServerLaunch(folder, extensionRoot, serverProject, serverProject
   if (fs.existsSync(localExe)) {
     return {
       command: localExe,
-      args: ['--root', folder.uri.fsPath]
+      args: ['--root', folder.uri.fsPath],
+      cwd: serverProjectDir
     };
   }
 
@@ -641,7 +890,8 @@ function resolveServerLaunch(folder, extensionRoot, serverProject, serverProject
       '--',
       '--root',
       folder.uri.fsPath
-    ]
+    ],
+    cwd: serverProjectDir
   };
 }
 
@@ -886,7 +1136,7 @@ function buildDecisionsDocTemplate(title) {
 async function runConnectionSmokeTest(folder, extensionRoot, serverProject, serverProjectDir) {
   const launch = resolveServerLaunch(folder, extensionRoot, serverProject, serverProjectDir);
   const child = childProcess.spawn(launch.command, launch.args, {
-    cwd: serverProjectDir,
+    cwd: launch.cwd,
     env: {
       ...process.env,
       MYMCP_ROOT: folder.uri.fsPath
@@ -902,7 +1152,7 @@ async function runConnectionSmokeTest(folder, extensionRoot, serverProject, serv
   try {
     await session.sendRequest(1, 'initialize', {
       protocolVersion: '2024-11-05',
-      clientInfo: { name: 'MyMCP VS Code Extension', version: '0.1.0' },
+      clientInfo: { name: 'MyMCP VS Code Extension', version: '0.1.11' },
       capabilities: {}
     });
     await session.sendNotification('notifications/initialized', {});
@@ -912,7 +1162,7 @@ async function runConnectionSmokeTest(folder, extensionRoot, serverProject, serv
       ? toolsResponse.result.tools.map((tool) => tool.name)
       : [];
 
-    const requiredTools = ['ReadFile', 'WriteFile', 'ReadMainContext', 'CreateDocsPack'];
+    const requiredTools = ['read_file', 'write_file', 'read_main_context', 'create_docs_pack'];
     const missingTools = requiredTools.filter((name) => !toolNames.includes(name));
 
     if (missingTools.length > 0) {
@@ -925,14 +1175,14 @@ async function runConnectionSmokeTest(folder, extensionRoot, serverProject, serv
     }
 
     const readMainContextResponse = await session.sendRequest(3, 'tools/call', {
-      name: 'ReadMainContext',
+      name: 'read_main_context',
       arguments: {}
     });
 
     if (readMainContextResponse?.error) {
       return {
         ok: false,
-        message: `Connection opened, but ReadMainContext failed: ${JSON.stringify(readMainContextResponse.error)}`,
+        message: `Connection opened, but read_main_context failed: ${JSON.stringify(readMainContextResponse.error)}`,
         toolCount: toolNames.length,
         stderr: Buffer.concat(stderrChunks).toString('utf8')
       };

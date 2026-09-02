@@ -1,8 +1,8 @@
 {
   "name": "mymcp-vscode-extension",
-  "displayName": "MyMCP Connector",
-  "description": "Registers the local MyMCP stdio server in VS Code.",
-  "version": "0.1.1",
+  "displayName": "Conector MyMCP",
+  "description": "Conecta o servidor MyMCP local ao VS Code.",
+  "version": "0.1.11",
   "publisher": "local",
   "engines": {
     "vscode": "^1.105.0"
@@ -25,6 +25,9 @@
     "onCommand:mymcp.restartMcpServer",
     "onCommand:mymcp.testConnection",
     "onCommand:mymcp.selectActiveProject",
+    "onCommand:mymcp.showVersion",
+    "onCommand:mymcp.runUnitTests",
+    "onCommand:mymcp.runAutomatedTests",
     "onCommand:mymcp.bootstrapProjectDocs",
     "onCommand:mymcp.bootstrapDocsPack",
     "onCommand:mymcp.createDocsPack",
@@ -33,12 +36,50 @@
     "onCommand:mymcp.openActiveProjectSpecs",
     "onCommand:mymcp.openActiveDocsPack",
     "onCommand:mymcp.createFeatureSpec",
+    "onCommand:mymcp.implementFeature",
+    "onCommand:mymcp.selectAgentProfile",
+    "onCommand:mymcp.configure",
     "onCommand:mymcp.createTaskDoc",
     "onCommand:mymcp.listSpecArtifacts",
     "onCommand:mymcp.openSpecsRoot",
     "onCommand:mymcp.listDocsArtifacts"
   ],
   "contributes": {
+    "configuration": {
+      "title": "MyMCP",
+      "properties": {
+        "mymcp.unitTestCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Comando opcional para testes unitarios. Se vazio, tenta detectar dotnet test, npm test ou cargo test."
+        },
+        "mymcp.automatedTestCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Comando para testes automatizados de interface, integracao ou regressao."
+        },
+        "mymcp.requireWriteApproval": {
+          "type": "boolean",
+          "default": false,
+          "description": "Exige token de aprovacao para ferramentas que escrevem arquivos."
+        },
+        "mymcp.allowedTestCommands": {
+          "type": "string",
+          "default": "",
+          "description": "Prefixos de comandos de teste adicionais autorizados, separados por ponto e virgula."
+        },
+        "mymcp.contextTokenBudget": {
+          "type": "number",
+          "default": 12000,
+          "minimum": 1000,
+          "description": "Quantidade estimada de tokens reservados para o contexto MyMCP."
+        }
+      }
+    },
+    "keybindings": [
+      { "command": "mymcp.runUnitTests", "key": "ctrl+alt+u" },
+      { "command": "mymcp.runAutomatedTests", "key": "ctrl+alt+a" }
+    ],
     "viewsContainers": {
       "activitybar": [
         {
@@ -59,71 +100,95 @@
     "commands": [
       {
         "command": "mymcp.openMcpServers",
-        "title": "MyMCP: Open MCP Servers"
+        "title": "MyMCP: Abrir servidores MCP"
       },
       {
         "command": "mymcp.startMcpServer",
-        "title": "MyMCP: Start MCP Server"
+        "title": "MyMCP: Iniciar servidor MCP"
       },
       {
         "command": "mymcp.restartMcpServer",
-        "title": "MyMCP: Restart MCP Server"
+        "title": "MyMCP: Reiniciar servidor MCP"
       },
       {
         "command": "mymcp.testConnection",
-        "title": "MyMCP: Test Connection"
+        "title": "MyMCP: Testar conexao"
       },
       {
         "command": "mymcp.selectActiveProject",
-        "title": "MyMCP: Select Active Project"
+        "title": "MyMCP: Selecionar projeto ativo"
+      },
+      {
+        "command": "mymcp.showVersion",
+        "title": "MyMCP: Exibir versao da extensao"
+      },
+      {
+        "command": "mymcp.runUnitTests",
+        "title": "MyMCP: Executar testes unitarios"
+      },
+      {
+        "command": "mymcp.runAutomatedTests",
+        "title": "MyMCP: Executar testes automatizados"
+      },
+      {
+        "command": "mymcp.configure",
+        "title": "MyMCP: Configurar projeto"
       },
       {
         "command": "mymcp.bootstrapProjectDocs",
-        "title": "MyMCP: Bootstrap Project Docs"
+        "title": "MyMCP: Inicializar documentos do projeto"
       },
       {
         "command": "mymcp.bootstrapDocsPack",
-        "title": "MyMCP: Bootstrap Docs Pack"
+        "title": "MyMCP: Inicializar pacote de documentacao"
       },
       {
         "command": "mymcp.createDocsPack",
-        "title": "MyMCP: Create Docs Pack"
+        "title": "MyMCP: Criar pacote de documentacao"
       },
       {
         "command": "mymcp.openMainContext",
-        "title": "MyMCP: Open Main Context"
+        "title": "MyMCP: Abrir contexto principal"
       },
       {
         "command": "mymcp.editMainContext",
-        "title": "MyMCP: Edit Main Context"
+        "title": "MyMCP: Editar contexto principal"
       },
       {
         "command": "mymcp.openActiveProjectSpecs",
-        "title": "MyMCP: Open Active Project Specs"
+        "title": "MyMCP: Abrir especificacoes do projeto"
       },
       {
         "command": "mymcp.openActiveDocsPack",
-        "title": "MyMCP: Open Active Docs Pack"
+        "title": "MyMCP: Abrir pacote de documentacao"
       },
       {
         "command": "mymcp.createFeatureSpec",
-        "title": "MyMCP: Create Feature Spec"
+        "title": "MyMCP: Criar especificacao de feature"
+      },
+      {
+        "command": "mymcp.implementFeature",
+        "title": "MyMCP: Implementar feature com agente"
+      },
+      {
+        "command": "mymcp.selectAgentProfile",
+        "title": "MyMCP: Selecionar perfil do agente"
       },
       {
         "command": "mymcp.createTaskDoc",
-        "title": "MyMCP: Create Task Doc"
+        "title": "MyMCP: Criar documento de tarefa"
       },
       {
         "command": "mymcp.listSpecArtifacts",
-        "title": "MyMCP: List Spec Artifacts"
+        "title": "MyMCP: Listar artefatos SDD"
       },
       {
         "command": "mymcp.listDocsArtifacts",
-        "title": "MyMCP: List Docs Artifacts"
+        "title": "MyMCP: Listar artefatos de documentacao"
       },
       {
         "command": "mymcp.openSpecsRoot",
-        "title": "MyMCP: Open Specs Root"
+        "title": "MyMCP: Abrir raiz das especificacoes"
       }
     ],
     "menus": {
@@ -147,6 +212,26 @@
           "command": "mymcp.selectActiveProject",
           "when": "view == mymcp.view",
           "group": "navigation@4"
+        },
+        {
+          "command": "mymcp.showVersion",
+          "when": "view == mymcp.view",
+          "group": "navigation@5"
+        },
+        {
+          "command": "mymcp.runUnitTests",
+          "when": "view == mymcp.view",
+          "group": "navigation@6"
+        },
+        {
+          "command": "mymcp.runAutomatedTests",
+          "when": "view == mymcp.view",
+          "group": "navigation@7"
+        },
+        {
+          "command": "mymcp.configure",
+          "when": "view == mymcp.view",
+          "group": "navigation@8"
         }
       ]
     },

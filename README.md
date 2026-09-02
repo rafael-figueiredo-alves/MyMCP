@@ -23,6 +23,11 @@ Servidor MCP em C#/.NET 10 com extensao do VS Code, suporte a SDD e doc pack por
 - `ReadFile`
 - `SearchText`
 - `WriteFile`
+- `ReadFilePage` e `WriteFilePage` para arquivos grandes sem consumir todo o contexto
+- `GetContextBudget` para consultar o orcamento configurado e estimativa de contexto
+- `RunProjectTests` e `GetTestRunHistory` para executar e auditar testes
+- `GetGitStatus` e `GetGitDiff` para revisar alteracoes antes do commit
+- `ValidateFeatureSdd` para validar os artefatos obrigatorios da feature
 - `ApplyTextEdits`
 - `ReadMainContext`
 - `WriteMainContext`
@@ -30,6 +35,11 @@ Servidor MCP em C#/.NET 10 com extensao do VS Code, suporte a SDD e doc pack por
 - `WriteDocsMarkdown`
 - `CreateFeatureSpec`
 - `CreateTaskDoc`
+- `CreateFeatureTestPlan`
+- `ValidateFeatureTests` (gate obrigatorio antes de concluir uma feature)
+- `GetWorkspacePermissions` e `RollbackLastChange` para controle e recuperacao
+- `DetectProjectLanguages`, `GetIncrementalContext` e perfis de agente
+- `ReadDecisionMemory` e `WriteDecisionMemory` para memoria arquitetural
 - `CreateDocsPack`
 - `ListSpecArtifacts`
 - `ListDocsArtifacts`
@@ -63,6 +73,16 @@ O script:
 
 O arquivo gerado fica em `artifacts\mymcp-vscode-extension.vsix`.
 
+## Configuracao pelo VS Code
+
+No painel MyMCP, use `Configurar projeto`. O formulario salva comandos e limites no `.vscode/settings.json` e guarda o token de aprovacao no armazenamento seguro da extensao. Depois de alterar permissoes ou token, use `Reiniciar servidor MCP`.
+
+As configuracoes principais sao `mymcp.requireWriteApproval`, `mymcp.unitTestCommand`, `mymcp.automatedTestCommand`, `mymcp.allowedTestCommands` e `mymcp.contextTokenBudget`.
+
+## Seguranca e validacao
+
+Antes da entrega, execute `node .\tests\mymcp-smoke.js`. Para exigir aprovacao explicita em escritas, configure `MYMCP_REQUIRE_WRITE_APPROVAL=true` e `MYMCP_WRITE_APPROVAL_TOKEN` no processo do servidor; passe o mesmo token no parametro `approvalToken`. Backups ficam em `.mymcp/backups` e a auditoria em `.mymcp/audit/operations.log`.
+
 ## Fluxo recomendado
 
 1. Abra o workspace no VS Code.
@@ -72,6 +92,8 @@ O arquivo gerado fica em `artifacts\mymcp-vscode-extension.vsix`.
 5. Rode `MyMCP: Test Connection` para validar o MCP ativo.
 6. Use o painel lateral do MyMCP para criar specs, tasks, docs e reiniciar o servidor.
 7. Use o MCP no chat/agente para ler, escrever e aplicar ajustes no projeto.
+
+Para cada feature, `CreateFeatureSpec` cria automaticamente `.mymcp/specs/features/<slug>/tests.md` e tarefas obrigatorias de testes. Depois de implementar, informe os caminhos dos arquivos de teste a `ValidateFeatureTests`; a ferramenta falha se algum arquivo ainda nao existir.
 
 ## Observacao
 

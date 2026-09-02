@@ -41,8 +41,41 @@ public static class WorkspaceTools
         [Description("File content to write.")]
         string content,
         [Description("Create missing parent directories.")]
-        bool createDirectories = true)
-        => workspace.WriteTextFile(path, content, createDirectories);
+        bool createDirectories = true,
+        [Description("Approval token required when MYMCP_REQUIRE_WRITE_APPROVAL=true.")]
+        string? approvalToken = null)
+        => workspace.WriteTextFile(path, content, createDirectories, approvalToken);
+
+    [McpServerTool, Description("Read a text file in pages to control context size. Use startLine and lineCount for the next page.")]
+    public static string ReadFilePage(
+        WorkspaceService workspace,
+        [Description("Path relative to the workspace root.")] string path,
+        [Description("First line of the page, 1-based.")] int startLine = 1,
+        [Description("Maximum lines in this page.")] int lineCount = 100)
+        => workspace.ReadTextFilePage(path, startLine, lineCount);
+
+    [McpServerTool, Description("Write a text file in pages. Page 1 replaces the file; later pages append when append is true.")]
+    public static string WriteFilePage(
+        WorkspaceService workspace,
+        [Description("Path relative to the workspace root.")] string path,
+        [Description("Content for this page.")] string content,
+        [Description("Page number, starting at 1.")] int page = 1,
+        [Description("Append this page after the existing content. Required for pages after the first.")] bool append = false,
+        [Description("Create missing parent directories.")] bool createDirectories = true,
+        [Description("Approval token required when write approval is enabled.")] string? approvalToken = null)
+        => workspace.WriteTextFilePage(path, content, page, append, createDirectories, approvalToken);
+
+    [McpServerTool, Description("Show the active MyMCP write permissions and approval requirements.")]
+    public static string GetWorkspacePermissions(WorkspaceService workspace)
+        => workspace.GetWorkspacePermissions();
+
+    [McpServerTool, Description("Restore the last backed-up file change made through MyMCP.")]
+    public static string RollbackLastChange(WorkspaceService workspace, [Description("Approval token when write approval is enabled.")] string? approvalToken = null)
+        => workspace.RollbackLastChange(approvalToken);
+
+    [McpServerTool, Description("Report the configured MyMCP context budget and estimate the available project context size. The model's private token balance is not exposed to MCP.")]
+    public static string GetContextBudget(WorkspaceService workspace)
+        => workspace.GetContextBudget();
 
     [McpServerTool, Description("Read the main context markdown file used to hold durable project rules.")]
     public static string ReadMainContext(WorkspaceService workspace)
@@ -146,14 +179,81 @@ public static class WorkspaceTools
         bool overwriteExisting = false)
         => workspace.CreateTaskDoc(new TaskDocRequest(slug, title, summary, overwriteExisting));
 
+    [McpServerTool, Description("Create the mandatory unit-test plan for a feature. The feature must not be considered complete until ValidateFeatureTests passes.")]
+    public static string CreateFeatureTestPlan(
+        WorkspaceService workspace,
+        [Description("Slug of the feature under .mymcp/specs/features.")] string slug,
+        [Description("Human-readable feature title.")] string title,
+        [Description("Short summary of the behavior that must be covered by unit tests.")] string summary,
+        [Description("Typical test file paths that the agent must create, relative to the workspace root.")] IReadOnlyList<string>? expectedTestPaths = null,
+        [Description("Overwrite the existing test plan and merge the required test tasks.")] bool overwriteExisting = false)
+        => workspace.CreateFeatureTestPlan(new FeatureTestPlanRequest(slug, title, summary, expectedTestPaths ?? [], overwriteExisting));
+
+    [McpServerTool, Description("Validate that the unit-test files for a feature exist. This is the completion gate: do not mark the feature done when this tool fails.")]
+    public static string ValidateFeatureTests(
+        WorkspaceService workspace,
+        [Description("Slug of the feature under .mymcp/specs/features.")] string slug,
+        [Description("Test file paths relative to the workspace root. Pass every unit-test file created for the feature.")] IReadOnlyList<string> testPaths)
+        => workspace.ValidateFeatureTests(slug, testPaths);
+
+    [McpServerTool, Description("Validate the required SDD artifacts for a feature. Fails when spec, tasks, notes or tests are missing.")]
+    public static string ValidateFeatureSdd(
+        WorkspaceService workspace,
+        [Description("Feature slug under .mymcp/specs/features.")] string slug)
+        => workspace.ValidateFeatureSdd(slug);
+
+    [McpServerTool, Description("Run a configured unit, integration or automated test command and persist its result in the MyMCP audit history.")]
+    public static string RunProjectTests(
+        WorkspaceService workspace,
+        [Description("Test command, such as dotnet test, npm test, cargo test or pytest.")] string command,
+        [Description("Category recorded in the audit, such as unit, integration or automated.")] string kind = "unit")
+        => workspace.RunProjectTests(command, kind);
+
+    [McpServerTool, Description("Read recent MyMCP test execution history.")]
+    public static string GetTestRunHistory(WorkspaceService workspace, [Description("Maximum records to return.")] int maxEntries = 20)
+        => workspace.GetTestRunHistory(maxEntries);
+
+    [McpServerTool, Description("Return git status for the workspace without changing files.")]
+    public static string GetGitStatus(WorkspaceService workspace)
+        => workspace.GetGitStatus();
+
+    [McpServerTool, Description("Return the current git diff for review before committing changes.")]
+    public static string GetGitDiff(WorkspaceService workspace)
+        => workspace.GetGitDiff();
+
+    [McpServerTool, Description("Detect the project languages and common test commands from workspace files.")]
+    public static string DetectProjectLanguages(WorkspaceService workspace)
+        => workspace.DetectProjectLanguages();
+
+    [McpServerTool, Description("Return a compact incremental context based on core rules and files changed in git.")]
+    public static string GetIncrementalContext(WorkspaceService workspace)
+        => workspace.GetIncrementalContext();
+
+    [McpServerTool, Description("List the built-in agent workflow profiles.")]
+    public static string ListAgentProfiles(WorkspaceService workspace)
+        => workspace.ListAgentProfiles();
+
+    [McpServerTool, Description("Read a built-in agent workflow profile.")]
+    public static string ReadAgentProfile(WorkspaceService workspace, [Description("Profile name: analysis, implementation, tests, review or documentation.")] string profile)
+        => workspace.ReadAgentProfile(profile);
+
+    [McpServerTool, Description("Read durable architectural decisions and project memory.")]
+    public static string ReadDecisionMemory(WorkspaceService workspace)
+        => workspace.ReadDecisionMemory();
+
+    [McpServerTool, Description("Append a durable decision to the project memory.")]
+    public static string WriteDecisionMemory(WorkspaceService workspace, [Description("Decision text, including context and rationale.")] string decision, [Description("Optional area or feature label.")] string area = "general", string? approvalToken = null)
+        => workspace.WriteDecisionMemory(decision, area, approvalToken);
+
     [McpServerTool, Description("Apply one or more exact text edits to an existing file.")]
     public static string ApplyTextEdits(
         WorkspaceService workspace,
         [Description("Path relative to the workspace root.")]
         string path,
         [Description("Ordered list of edits to apply.")]
-        IReadOnlyList<TextEditRequest> edits)
-        => workspace.ApplyTextEdits(path, edits);
+        IReadOnlyList<TextEditRequest> edits,
+        [Description("Approval token required when write approval is enabled.")] string? approvalToken = null)
+        => workspace.ApplyTextEdits(path, edits, approvalToken);
 
     [McpServerTool, Description("Search for text across workspace files and return matching snippets.")]
     public static string SearchText(
